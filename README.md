@@ -13,11 +13,18 @@ binary with [`pkg`](https://github.com/vercel/pkg).
 
 ## What it steals
 
-- **Cookies** — every cookie from every profile of every Chromium browser,
-  decrypted to plaintext where possible.
-- **Saved passwords** — every entry from every `Login Data*` file (the local
-  store *and* the per-Google-account `Login Data For Account` store), decrypted
-  to plaintext where possible.
+- **Chromium browsers** (Chrome, Edge, Brave, Chromium, Vivaldi, Opera) —
+  every cookie from every profile, and every saved password from every
+  `Login Data*` file (the local store *and* the per-Google-account
+  `Login Data For Account` store), decrypted to plaintext where possible.
+- **Firefox** — every cookie from every profile (custom `-profile` dirs, Tor
+  Browser, camoufox included) plus saved passwords from `logins.json`,
+  decrypted with the default (no-master-password) key. Entries protected by a
+  master password are reported with `decryption_failed`.
+- **Safari** — saved passwords from `DataVault.db` (decrypted with the Keychain
+  "Safari Forms AutoFill Encryption Key") and cookies from
+  `Cookies.binarycookies`. Both paths are TCC-protected on recent macOS, so
+  they're read when permitted and reported as unavailable otherwise.
 - **Keychain** — every generic-password item in the login Keychain, with its
   value retrieved where the `security` CLI allows it.
 
@@ -95,6 +102,12 @@ machine with no Node installed.
       ]
     }
   ],
+  "firefox": {
+    "profiles": [
+      { "path": ".../kiu19qjp.default-release", "cookies": [ ... ], "passwords": [ ... ] }
+    ]
+  },
+  "safari": { "exists": true, "keychain_key": "...", "cookies": [ ... ], "passwords": [ ... ] },
   "other_apps": [ ... ],
   "keychain": { "total": 135, "entries": [ { "service": "...", "account": "...", "value": "..." } ] }
 }

