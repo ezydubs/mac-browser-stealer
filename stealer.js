@@ -229,9 +229,11 @@ const TABLE_VALIDATORS = {
   // host_key (col 1) must look like a domain: has a dot, no spaces, < 253 chars.
   cookies: (vals) =>
     typeof vals[1] === 'string' && vals[1].includes('.') && !/\s/.test(vals[1]) && vals[1].length < 253,
-  // origin_url (col 0) must be an http(s) URL.
+  // origin_url (col 0) must be a real login origin: an http(s) URL or an
+  // android:// app-sync entry. (Rejects the scanner's truncated fragments like
+  // "ps://accounts.google" that start mid-URL.)
   logins: (vals) =>
-    typeof vals[0] === 'string' && /^https?:\/\//i.test(vals[0]),
+    typeof vals[0] === 'string' && /^(https?|android|file):\/\//i.test(vals[0]),
 };
 
 // `validators` maps table name -> row validator; defaults to the Chromium
