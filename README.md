@@ -4,7 +4,8 @@ A zero-dependency Node.js stealer for macOS. It reads and decrypts browser
 **cookies** and **saved passwords** from every Chromium-based browser on the
 machine (Chrome, Edge, Brave, Chromium, Vivaldi, Opera, and any other app with
 a `Safe Storage` Keychain entry), plus a full **macOS Keychain dump** of every
-saved password. Everything is written to a local JSON file — no network beacon.
+saved password, and a broad set of **credential, identity, and session** data.
+Everything is written to a local JSON file — no network beacon.
 
 The whole thing is plain JavaScript with **no npm dependencies**: SQLite is
 parsed by hand (`lib/sqlite.js`), crypto uses `node:crypto`, and the Keychain is
@@ -27,6 +28,28 @@ binary with [`pkg`](https://github.com/vercel/pkg).
   they're read when permitted and reported as unavailable otherwise.
 - **Keychain** — every generic-password item in the login Keychain, with its
   value retrieved where the `security` CLI allows it.
+- **Credential stores** (`creds`) — well-known credential files from the home
+  directory: SSH keys / `known_hosts` / `config`, GPG keyrings, AWS / GCP /
+  Azure cloud creds, `.git-credentials`, GitHub `gh` tokens, `.netrc`, npm /
+  pip / cargo / docker / CI tokens, plus crypto-wallet vault files (Exodus,
+  MetaMask, Phantom). Exodus `*.seco` vaults are decrypted with the stored
+  passphrase (SECO v0 = scrypt + two-stage AES-256-GCM) and the BIP39 mnemonic
+  is extracted when present.
+- **Browser deep-dive** (`browser_deep`) — per-profile visit history
+  (`urls` + `visits`), saved credit cards / addresses (Web Data), bookmarks,
+  download history, open tabs / session, and installed extensions, for Chrome
+  and Firefox.
+- **System identity & location** (`system`) — the full `dscl` user record,
+  network config + DHCP lease (rough physical location), running-process
+  environment variables (`ps -E`), the clipboard, a screen screenshot, and
+  recently-opened apps.
+- **Password managers** (`password_managers`) — vault files for LastPass,
+  Bitwarden, and 1Password, plus any password-manager Keychain items.
+- **Messengers** (`messengers`) — Discord auth tokens from the Local Storage
+  leveldb. The stored `token` value is a base64-encoded `v10` os_crypt blob,
+  which is decrypted with the "discord Safe Storage" Keychain secret into the
+  classic 3-segment token (`tokens`; the raw stored values are kept in
+  `token_values`). Also the Telegram Desktop session / `tdata` files.
 
 ## How it works
 
@@ -110,7 +133,37 @@ machine with no Node installed.
   },
   "safari": { "exists": true, "keychain_key": "...", "cookies": [ ... ], "passwords": [ ... ] },
   "other_apps": [ ... ],
-  "keychain": { "total": "<n>", "entries": [ { "service": "...", "account": "...", "value": "..." } ] }
+  "keychain": { "total": "<n>", "entries": [ { "service": "...", "account": "...", "value": "..." } ] },
+  "creds": {
+    "files": { ".ssh/known_hosts": "...", ".config/gh/hosts.yml": "...", "...": "..." },
+    "wallets": [
+      { "dir": "Library/Application Support/Exodus/exodus.wallet",
+        "files": [ { "name": "seed.seco", "size": 0, "content": "<hex>" } ],
+        "decrypted_seco": { "seed.seco": { "size": 0, "hex": "...", "mnemonic": "<words>" } } }
+    ]
+  },
+  "browser_deep": {
+    "profiles": [
+      { "name": "Default",
+        "history": { "urls": [ { "url": "...", "title": "...", "last_visit_time": 0 } ], "visits": [ ... ] },
+        "web_data": { "credit_cards": [ ... ], "masked_credit_cards": [ ... ], "addresses": [ ... ] },
+        "bookmarks": [ { "name": "...", "url": "..." } ],
+        "downloads": [ ... ], "open_tabs": [ ... ], "extensions": [ { "id": "...", "name": "..." } ] }
+    ]
+  },
+  "system": {
+    "user": { "UniqueID": "0", "RecordName": "...", "..." : "..." },
+    "network": { "hostname": "...", "interfaces": { "en0": { "ip": "...", "mac": "..." } }, "dhcp_leases": "..." },
+    "process_env": [ { "pid": 0, "env": { "TOKEN": "..." } } ],
+    "clipboard": "...",
+    "screenshot": { "size": 0, "preview_base64": "..." },
+    "recent_files": [ { "source": "...", "items": [ { "name": "...", "url": "...", "category": "RecentDocuments", "date": "..." } ] } ]
+  },
+  "password_managers": { "vaults": [ ... ], "keychain_items": [ ... ] },
+  "messengers": {
+    "discord": { "dir": "...", "keychain_secret": "...", "token_values": [ "..." ], "tokens": [ "..." ] },
+    "telegram": { "locations": [ ... ], "session_files": [ { "dir": "...", "files": [ ... ] } ], "dc_ids": [ 1, 8 ], "found": false }
+  }
 }
 ```
 
