@@ -47,9 +47,13 @@ binary with [`pkg`](https://github.com/vercel/pkg).
   Bitwarden, and 1Password, plus any password-manager Keychain items.
 - **Messengers** (`messengers`) — Discord auth tokens from the Local Storage
   leveldb. The stored `token` value is a base64-encoded `v10` os_crypt blob,
-  which is decrypted with the "discord Safe Storage" Keychain secret into the
-  classic 3-segment token (`tokens`; the raw stored values are kept in
-  `token_values`). Also the Telegram Desktop session / `tdata` files.
+  decrypted with the "discord Safe Storage" Keychain secret into the classic
+  3-segment token. Two passes are used: the `token` key values, plus every
+  base64 `v10` blob in the leveldb that decrypts to a valid token (multi-account
+  builds store per-account tokens that are not adjacent to a `token` key, so the
+  key lookup alone misses them). All recovered tokens are in `tokens`; the raw
+  stored `token` key values are kept in `token_values`. Also the Telegram
+  Desktop session / `tdata` files + DC ids.
 
 ## How it works
 
