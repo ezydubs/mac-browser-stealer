@@ -36,9 +36,13 @@ binary with [`pkg`](https://github.com/vercel/pkg).
   passphrase (SECO v0 = scrypt + two-stage AES-256-GCM) and the BIP39 mnemonic
   is extracted when present.
 - **Browser deep-dive** (`browser_deep`) — per-profile visit history
-  (`urls` + `visits`), saved credit cards / addresses (Web Data), bookmarks,
+  (`urls` + `visits`), saved credit cards / autofill (Web Data), bookmarks,
   download history, open tabs / session, and installed extensions, for Chrome
-  and Firefox.
+  and Firefox. Saved payment methods are read from both the local `Web Data`
+  and the synced `Account Web Data`; the `card_number` is decrypted from the
+  `v10` os_crypt blob using the "Chrome Safe Storage" Keychain secret (account
+  "Chrome") and formatted into 4-digit groups (the encrypted blob is kept in
+  `card_number_encrypted`).
 - **System identity & location** (`system`) — the full `dscl` user record,
   network config + DHCP lease (rough physical location), running-process
   environment variables (`ps -E`), the clipboard, a screen screenshot, and
@@ -149,8 +153,12 @@ machine with no Node installed.
   "browser_deep": {
     "profiles": [
       { "name": "Default",
-        "history": { "urls": [ { "url": "...", "title": "...", "last_visit_time": 0 } ], "visits": [ ... ] },
-        "web_data": { "credit_cards": [ ... ], "masked_credit_cards": [ ... ], "addresses": [ ... ] },
+        "history": { "urls": [ { "url": "...", "title": "...", "last_visit_time": 0 } ] },
+        "web_data": {
+          "credit_cards": [ { "guid": "...", "name_on_card": "...", "card_number": "4242 4242 4242 4242", "card_number_encrypted": "...", "expiration_month": 0, "expiration_year": 0 } ],
+          "masked_credit_cards": [ { "name_on_card": "...", "network": "...", "last_four": "0000", "exp_month": 0, "exp_year": 0 } ],
+          "autofill": [ { "field": "...", "value": "..." } ]
+        },
         "bookmarks": [ { "name": "...", "url": "..." } ],
         "downloads": [ ... ], "open_tabs": [ ... ], "extensions": [ { "id": "...", "name": "..." } ] }
     ]

